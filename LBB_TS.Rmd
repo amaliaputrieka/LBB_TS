@@ -1,0 +1,303 @@
+---
+title: "LBB_TS"
+author: "Amalia Purieka"
+date: "4/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Backdground
+
+The dataset we’re using reflects reported crime incidents in the City of Chicago from 2001 to the present (2021). Data is extracted from Chicago Police Department’s CLEAR (Citizen Law Enforcement Analysis and Reporting) system. 
+
+We’re trying to see an exercise in Time Series to focus on one crime only, THEFT. We’ll try to see if there’s any seasonality or trend related to the amount of theft going on and maybe give a helpful tip on when theft is more likely to occur.
+
+## Library Import
+
+```{r}
+library(tidyverse)
+library(skimr)
+library(tseries)
+library(lubridate)
+library(ggplot2)
+library(TSstudio)
+library(forecast)
+library(MLmetrics)
+```
+
+## Data Import
+
+```{r}
+crime <- read.csv("data_input/Crimes_-_2001_to_Present.csv")
+
+colnames(crime) <- janitor::make_clean_names(colnames(crime))
+```
+
+## Data Wrangling
+
+We want to see how many 'theft' happens in the duration of a day.
+
+```{r}
+crime_select_1 <- crime %>% 
+  select(-id, -case_number, -block, -iucr, -location_description, -description, -fbi_code, 
+         -beat, -district, -ward, -community_area, -x_coordinate, -y_coordinate, -year, -longitude, -latitude, -location) %>% 
+  mutate(date = mdy_hms(date)) %>% 
+  filter(primary_type == "THEFT") %>% 
+  filter(date <= as.Date("2021-03-30")) %>% #removing April 2021 because it's still ongoing
+  select(date) %>% 
+  arrange(date) %>% 
+  group_by(year = year(date)) %>% 
+  count(month(date, label = T)) %>% 
+  ungroup(year) %>% 
+  select(-year)
+
+# Rename our columns
+colnames(crime_select_1) <- c("month", "total_theft")
+```
+
+```{r}
+crime
+crime_select_1
+```
+
+
+## EDA
+
+Create Time Series Object
+
+```{r}
+crime_ts <- ts(crime_select_1$total_theft, start = c(2001,1), frequency = 12)
+```
+
+Plotting our Time Series
+
+```{r}
+crime_ts %>% autoplot()
+```
+Our Decomposed time series containing Trend, Seasonal, and Error plot
+
+```{r}
+crime_dc <- crime_ts %>% decompose(type = "additive")
+crime_dc %>% autoplot()
+```
+
+There’s a sharp spike in theft rate from 2015 to 2016, as well as 2019 to 2020. What’s causing it is abit unclear, even after looking online for news reference. This may impact our model perfromance greatly, but we’ll try our forecast anyway.
+
+## Theft Seasonality Plot
+
+```{r}
+crime_select_1 %>% 
+  mutate(seasonal = crime_dc$seasonal,
+         trend = crime_dc$trend,
+         random = crime_dc$random) %>% 
+  distinct(month,seasonal) %>% 
+  ggplot(aes(month, seasonal)) + geom_col()
+```
+
+Looking at our graph, this means that the rate of theft increases from May to August, and the rate of theft is lowest on February.
+
+## Cross Validation
+
+We need to split our data into train and test in order check our model performance. In this case, I’m using the last 8 month as our test period.
+
+```{r}
+crime_1_train <- window(crime_ts, end = c(2020,6))
+crime_1_test <- window(crime_ts, start = c(2020,7))
+```
+
+## Modelling
+
+We will try both HoltWinters as well as ARIMA and compare our MAPE (Mean Absolute Percentage Error) to measure our model performance, where the closer it is to 0, the better.
+
+## HoltWinters
+
+```{r}
+crime_1_model <- HoltWinters(crime_1_train, seasonal = "additive")
+```
+
+Our model forecast.
+
+```{r}
+crime_1_model_forecast <- forecast(crime_1_model, h = length(crime_1_test))
+autoplot(crime_1_model_forecast)
+```
+
+Our MAPE in HoltWinters is 12.15%.
+
+```{r}
+MAPE(y_pred = crime_1_model_forecast$mean, y_true = crime_1_test)*100
+```
+
+Our HW model forecast compared to our actual data.
+
+```{r}
+test_forecast(crime_ts,
+              crime_1_model_forecast,
+              crime_1_train,
+              crime_1_test)
+```
+
+## ARIMA
+
+We’ll be using auto.arima for our model
+
+```{r}
+crime_1_model_arima <- auto.arima(crime_1_train)
+```
+
+ARIMA’s forecast plot
+
+```{r}
+crime_1_model_arima_forecast <- forecast(crime_1_model_arima, h = length(crime_1_test))
+autoplot(crime_1_model_arima_forecast)
+```
+
+Our MAPE in ARIMA model is 19.3%. A 7.15% increasement from our HoltWinters model. HW model is better.
+
+```{r}
+MAPE(y_pred = crime_1_model_arima_forecast$mean, y_true = crime_1_test)*100
+```
+
+Our ARIMA model forecast compared to our actual data.
+
+```{r}
+test_forecast(crime_ts,
+              crime_1_model_arima_forecast,
+              crime_1_train,
+              crime_1_test)
+```
+
+## Conclusion for Theft Monthly Time Series
+
+There’s a large spike starting from 2020, similar to the behaviour observed in 2015. Unfortunately, such sudden spike is causing our model to fail to make an accurate prediction. 
+
+Therefore, the insight that can probably be taken from our theft time series model comes from our seasonality plot, where we know that the rate of theft is high from May to Oct.
+
+
+## Theft Spike from 2015 to 2016
+
+Inspecting the period between March 2015 to August 2016, we found that there is multiple seasonality, Weekly and Monthly. 
+
+Below is our modiefied Data Wrangling to accomodate our need.
+
+```{r}
+crime_select_2 <- crime %>% 
+  select(-id, -case_number, -block, -iucr, -location_description, -description, -fbi_code, 
+         -beat, -district, -ward, -community_area, -x_coordinate, -y_coordinate, -year, -longitude, -latitude, -location) %>% 
+  mutate(date = mdy_hms(date)) %>% 
+  filter(primary_type == "THEFT") %>% 
+  select(date) %>% 
+  arrange(date) %>% 
+  filter(date >= as.Date("2015-03-01") & date <= as.Date("2016-08-31")) %>% 
+  group_by(year = year(date), monthly = month(date)) %>% 
+  count(daily = day(date)) %>% 
+  ungroup()
+```
+
+Below is our multiple seasonality time series object
+
+```{r}
+crime_weekly_ts <- msts(crime_select_2$n, start = c(3,1), seasonal.periods = c(7, 30))
+autoplot(crime_weekly_ts)
+```
+
+Below is our decomposed time series object, showing the trend, both seasonality, and random/error value.
+
+```{r}
+crime_weekly_dc <- mstl(crime_weekly_ts)
+autoplot(crime_weekly_dc)
+```
+
+## Weekly Seasonality Analysis
+
+As we can see from the plot below, crime rate is the highest on the 15th to 23rd each month.
+
+```{r}
+as.data.frame(crime_weekly_dc) %>% 
+  mutate(day = crime_select_2$daily) %>% 
+  group_by(day) %>% 
+  summarise(seasonal = sum(Seasonal7 + Seasonal30)) %>% 
+  ggplot(aes(day, seasonal)) +geom_col()
+```
+
+The months where theft incident is high are April, July, October, and December.
+
+```{r}
+as.data.frame(crime_weekly_dc) %>% 
+  mutate(day = crime_select_2$daily, month = month(crime_select_2$monthly, label = T)) %>% 
+  group_by(month) %>% 
+  summarise(seasonal = sum(Seasonal7 + Seasonal30)) %>% 
+  ggplot(aes(month, seasonal)) +geom_col()
+```
+
+Based on the two seasonality plot above, we can recommend that Chicago Police and Chicago citizens to be more vigilant for theft around April, July, October, and December, as well as 15th to 23rd of each month, because according to the data we observed, that’s when theft is most likely to happen.
+
+
+## Cross Validation
+
+We’re taking the last 20 weeks as our test, and the rest as our training data.
+
+```{r}
+n_test <- 20
+
+crime_w_train <- head(crime_weekly_ts, length(crime_weekly_ts)-n_test)
+crime_w_test <- tail(crime_weekly_ts, n_test)
+```
+
+## HoltWinters Complex Seasonal Model Forecast
+
+Below is our forecast for HoltWinters model.
+
+```{r}
+model_hw_crime_msts <- HoltWinters(crime_w_train)
+model_hw_msts_forecast <- forecast(model_hw_crime_msts, h=n_test)
+
+autoplot(model_hw_msts_forecast)
+```
+
+Comparing our forecast with our actual data
+
+```{r}
+test_forecast(crime_weekly_ts,
+              model_hw_msts_forecast,
+              crime_w_train,
+              crime_w_test)
+```
+
+The resulting MAPE of our model is 9.48%.
+
+```{r}
+MAPE(model_hw_msts_forecast$mean, crime_w_test)
+```
+
+## Conclusion
+
+After examining both overall data and the data on 2015-2016, there’s a difference in our seasonal data pattern, as we can see below.
+
+## Monthly Seasonal
+
+Our monthly seasonal data can be used to determine when the police and citizen should be more aware of theft.
+
+```{r}
+crime_select_1 %>% 
+  mutate(seasonal = crime_dc$seasonal,
+         trend = crime_dc$trend,
+         random = crime_dc$random) %>% 
+  distinct(month,seasonal) %>% 
+  ggplot(aes(month, seasonal)) + geom_col()
+```
+
+```{r}
+as.data.frame(crime_weekly_dc) %>% 
+  mutate(day = crime_select_2$daily, month = month(crime_select_2$monthly, label = T)) %>% 
+  group_by(month) %>% 
+  summarise(seasonal = sum(Seasonal7 + Seasonal30)) %>% 
+  ggplot(aes(month, seasonal)) +geom_col()
+```
+
+Our forecast failed to predict our theft rate's sudden jump/fall, although the model between 2015 to 2016 has a smaller MAPE value because the sudden jump/fall period is more diminutive.
+
+In conclusion, while we can extract good seasonal data, the forecast ability is not as reliable because of the sudden jump/fall in numbers that we don't seem to be able to predict.
